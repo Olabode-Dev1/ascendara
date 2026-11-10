@@ -1,10 +1,14 @@
-import { useState, useEffect, memo, useCallback, useRef } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import HomeCategories from "@/components/HomeCategories";
+import RecentlyViewedGames from "@/components/RecentlyViewedGames";
+import useCatalogDiscovery from "@/hooks/useCatalogDiscovery";
+import { catalogSourceKey, resolveViewedGames } from "@/lib/catalogDiscovery";
+import { useState, useEffect, memo, useCallback, useRef, useMemo } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AspectRatio } from "@/components/ui/aspect-ratio";
+import { buildCategoryPreviews, selectCatalogGames } from "@/lib/catalogBrowse";
 import RecentGameCard from "@/components/RecentGameCard";
 import GameContextMenu from "@/components/GameContextMenu";
 import SteamNotRunningDialog from "@/components/SteamNotRunningDialog";
@@ -21,7 +25,6 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import {
-  Flame,
   Globe,
   ChevronLeft,
   ChevronRight,
@@ -87,18 +90,7 @@ const cachedCarouselImages = () => {
 const cachedSections = () =>
   sectionsCache && sectionsCache.source === gamesCache ? sectionsCache.sections : null;
 
-const computeSourceKey = settings => {
-  if (!settings) return "none";
-  const customMode = !!settings.customSourcesMode;
-  if (customMode) {
-    const list = settings.activeCustomList;
-    if (list?.id) return `list:${list.id}`;
-    const src = settings.customSource;
-    if (src?.url) return `custom:${src.url}`;
-    return "custom:none";
-  }
-  return `official:${settings.localIndex || "default"}`;
-};
+const computeSourceKey = catalogSourceKey;
 
 // Unified key for the carousel image map: prefer imgID (official index),
 // fall back to a title-based key for custom sources that have no imgID.
@@ -243,7 +235,16 @@ const MiniGameCard = memo(({ game, onClick, onContextMenu }) => {
   return (
     <div
       ref={cardRef}
-      className="group/mini relative cursor-pointer overflow-hidden rounded-lg"
+      className="group/mini relative cursor-pointer overflow-hidden rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      role="button"
+      tabIndex={0}
+      aria-label={game.game}
+      onKeyDown={event => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       onClick={onClick}
       onContextMenu={e => {
         e.preventDefault();
@@ -421,6 +422,8 @@ const HorizontalSection = ({
   onGameClick,
   onContextMenu,
   accentColor = "primary",
+  browseTo,
+  viewAllLabel,
 }) => {
   const scrollRef = useRef(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -491,7 +494,7 @@ const HorizontalSection = ({
   return (
     <div className="relative">
       {/* Header */}
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-3">
           <div
             className={cn(
@@ -509,7 +512,14 @@ const HorizontalSection = ({
           </span>
         </div>
 
-        <div className="flex gap-1">
+        <div className="flex items-center gap-1">
+          <Link
+            to={browseTo}
+            className={buttonVariants({ variant: "ghost", size: "sm" })}
+          >
+            {viewAllLabel}
+            <ArrowRight className="ms-2 h-4 w-4" />
+          </Link>
           <Button
             variant="ghost"
             size="icon"
@@ -556,6 +566,13 @@ const HorizontalSection = ({
   );
 };
 
+const getGameSections = games => ({
+  topGames: selectCatalogGames(games, { section: "top" }).slice(0, 100),
+  recentlyUpdatedGames: selectCatalogGames(games, { section: "updated" }).slice(0, 100),
+  onlineGames: selectCatalogGames(games, { section: "online" }).slice(0, 100),
+  actionGames: selectCatalogGames(games, { section: "action" }).slice(0, 100),
+});
+
 const Home = memo(() => {
   const navigate = useNavigate();
   const [apiGames, setApiGames] = useState(() => gamesCache || []);
@@ -577,6 +594,12 @@ const Home = memo(() => {
   );
   const { t } = useLanguage();
   const { settings } = useSettings();
+  const discovery = useCatalogDiscovery();
+  const discoverySource = catalogSourceKey(settings);
+  const viewedGames = useMemo(
+    () => resolveViewedGames(apiGames, discovery.recent[discoverySource] || []),
+    [apiGames, discovery.recent, discoverySource]
+  );
   const [currentSlide, setCurrentSlide] = useState(0);
   const [autoPlay, setAutoPlay] = useState(true);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -944,11 +967,10 @@ const Home = memo(() => {
       recentlyUpdatedGames: recentlyUpdatedSection,
       onlineGames: onlineSection,
       actionGames: actionSection,
-      usedGames,
     } = getGameSections(apiGames);
 
-    // Then get popular categories, passing the used games set
-    const popularCats = getPopularCategories(apiGames, usedGames);
+    // Category counts and previews use all matches in the catalog.
+    const popularCats = buildCategoryPreviews(apiGames);
 
     sectionsCache = {
       source: apiGames,
@@ -967,138 +989,6 @@ const Home = memo(() => {
     setActionGames(actionSection);
     setPopularCategories(popularCats);
   }, [apiGames]);
-
-  const getGameSections = games => {
-    if (!Array.isArray(games))
-      return {
-        topGames: [],
-        recentlyUpdatedGames: [],
-        onlineGames: [],
-        actionGames: [],
-        usedGames: new Set(),
-      };
-
-    // Custom sources (Hydra Library) don't provide weight, category, or online
-    // flags. Degrade the section layout so Home stays useful instead of empty.
-    const isCustomSource = games.some(g => g?.customSource);
-    if (isCustomSource) {
-      const usedGames = new Set();
-
-      const recentlyUpdatedSection = games
-        .filter(g => !!g?.latest_update)
-        .sort((a, b) => new Date(b.latest_update) - new Date(a.latest_update))
-        .slice(0, 100);
-      recentlyUpdatedSection.forEach(g => usedGames.add(g.game));
-
-      // "Top" for custom sources = newest entries we haven't shown yet
-      const topSection = games.filter(g => !usedGames.has(g.game)).slice(0, 100);
-      topSection.forEach(g => usedGames.add(g.game));
-
-      return {
-        topGames: topSection,
-        recentlyUpdatedGames: recentlyUpdatedSection,
-        onlineGames: [],
-        actionGames: [],
-        usedGames,
-      };
-    }
-
-    // Create a shared Set to track used games across all sections
-    const usedGames = new Set();
-
-    // Get top games first (they get priority) - only top 100 by weight
-    const topGamesSection = games
-      .filter(game => parseInt(game.weight || 0) > 30)
-      .sort((a, b) => parseInt(b.weight || 0) - parseInt(a.weight || 0))
-      .slice(0, 100);
-
-    // Mark top games as used
-    topGamesSection.forEach(game => usedGames.add(game.game));
-
-    // Get recently updated games, excluding already used games - limit to 100
-    const recentlyUpdatedSection = games
-      .filter(game => !!game.latest_update && !usedGames.has(game.game))
-      .sort((a, b) => new Date(b.latest_update) - new Date(a.latest_update))
-      .slice(0, 100);
-
-    // Mark recently updated games as used
-    recentlyUpdatedSection.forEach(game => usedGames.add(game.game));
-
-    // Get online games, excluding already used games - limit to 100
-    const onlineGamesSection = games
-      .filter(game => game.online && !usedGames.has(game.game))
-      .sort((a, b) => parseInt(b.weight || 0) - parseInt(a.weight || 0))
-      .slice(0, 100);
-
-    // Mark online games as used
-    onlineGamesSection.forEach(game => usedGames.add(game.game));
-
-    // Get action games, excluding already used games - limit to 100
-    const actionGamesSection = games
-      .filter(
-        game =>
-          Array.isArray(game.category) &&
-          game.category.some(cat =>
-            ["Action", "Adventure", "Fighting", "Shooter"].includes(cat)
-          ) &&
-          !usedGames.has(game.game)
-      )
-      .sort((a, b) => parseInt(b.weight || 0) - parseInt(a.weight || 0))
-      .slice(0, 100);
-
-    // Mark action games as used
-    actionGamesSection.forEach(game => usedGames.add(game.game));
-
-    return {
-      topGames: topGamesSection,
-      recentlyUpdatedGames: recentlyUpdatedSection,
-      onlineGames: onlineGamesSection,
-      actionGames: actionGamesSection,
-      usedGames, // Return the set of used games for use in getPopularCategories
-    };
-  };
-
-  const getPopularCategories = (games, usedGames = new Set()) => {
-    if (!Array.isArray(games)) return {};
-
-    const categories = {};
-
-    // Helper function to get unique games for a category
-    const getUniqueGamesForCategory = (category, count = 4) => {
-      return games
-        .filter(
-          game =>
-            game.category?.includes(category) &&
-            !usedGames.has(game.game) &&
-            parseInt(game.weight || 0) > 20
-        )
-        .sort((a, b) => parseInt(b.weight || 0) - parseInt(a.weight || 0))
-        .slice(0, count)
-        .map(game => {
-          usedGames.add(game.game);
-          return game;
-        });
-    };
-
-    // Get games for each category
-    const popularCategories = [
-      "Action",
-      "Adventure",
-      "Survival",
-      "Simulation",
-      "Strategy",
-      "Sports",
-    ];
-
-    popularCategories.forEach(category => {
-      const categoryGames = getUniqueGamesForCategory(category);
-      if (categoryGames.length >= 2) {
-        categories[category] = categoryGames;
-      }
-    });
-
-    return categories;
-  };
 
   const getRecentGames = async games => {
     const recentlyPlayed = recentGamesService.getRecentGames();
@@ -1805,6 +1695,20 @@ const Home = memo(() => {
           </section>
         )}
 
+        <HomeCategories
+          categories={popularCategories}
+          mode="pinned"
+          renderGame={game => (
+            <MiniGameCard
+              key={game.gameID || game.game}
+              game={game}
+              onClick={() => handleCarouselGameClick(game)}
+              onContextMenu={handleContextMenu}
+            />
+          )}
+        />
+        <RecentlyViewedGames games={viewedGames} source={discoverySource} />
+
         {/* Top Games - Horizontal Scroll */}
         {topGames.length > 0 && (
           <div data-tour="home-rows">
@@ -1812,6 +1716,8 @@ const Home = memo(() => {
               title={t("home.topGames")}
               icon={TrendingUp}
               games={topGames}
+              browseTo="/browse?section=top"
+              viewAllLabel={t("browse.viewAll", { defaultValue: "View all" })}
               onGameClick={handleCarouselGameClick}
               onContextMenu={handleContextMenu}
             />
@@ -1825,6 +1731,8 @@ const Home = memo(() => {
               title={t("home.mostRecentlyUpdated")}
               icon={RefreshCw}
               games={recentlyUpdatedGames}
+              browseTo="/browse?section=updated"
+              viewAllLabel={t("browse.viewAll", { defaultValue: "View all" })}
               onGameClick={handleCarouselGameClick}
               onContextMenu={handleContextMenu}
             />
@@ -1838,6 +1746,8 @@ const Home = memo(() => {
               title={t("home.onlineGames")}
               icon={Globe}
               games={onlineGames}
+              browseTo="/browse?section=online"
+              viewAllLabel={t("browse.viewAll", { defaultValue: "View all" })}
               onGameClick={handleCarouselGameClick}
               onContextMenu={handleContextMenu}
             />
@@ -1848,63 +1758,29 @@ const Home = memo(() => {
         {actionGames.length > 0 && (
           <div className="mt-8">
             <HorizontalSection
-              title={t("home.actionGames")}
+              title={t("browse.sections.action", { defaultValue: "Action & adventure" })}
               icon={Zap}
               games={actionGames}
+              browseTo="/browse?section=action"
+              viewAllLabel={t("browse.viewAll", { defaultValue: "View all" })}
               onGameClick={handleCarouselGameClick}
               onContextMenu={handleContextMenu}
             />
           </div>
         )}
 
-        {/* Popular Categories - Grid of Cards */}
-        {Object.keys(popularCategories).length > 0 && (
-          <section className="mt-10">
-            <div className="mb-6 flex items-center gap-3">
-              <div className="mb-2 flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
-                <Flame className="h-4 w-4 text-primary" />
-              </div>
-              <h2 className="text-lg font-bold text-foreground">
-                {t("home.popularCategories")}
-              </h2>
-            </div>
-
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {Object.entries(popularCategories).map(([category, games]) => (
-                <Card
-                  key={category}
-                  className="group overflow-hidden border-border/50 bg-gradient-to-br from-card to-card/50 transition-all hover:border-primary/30 hover:shadow-xl"
-                >
-                  <CardContent className="p-5">
-                    <div className="mb-4 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
-                          <Gamepad2 className="h-5 w-5 text-primary" />
-                        </div>
-                        <div>
-                          <h3 className="font-bold text-foreground">{category}</h3>
-                          <p className="text-xs text-muted-foreground">
-                            {games.length} games
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {games.slice(0, 4).map(game => (
-                        <MiniGameCard
-                          key={game.game}
-                          game={game}
-                          onClick={() => handleCarouselGameClick(game)}
-                          onContextMenu={handleContextMenu}
-                        />
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          </section>
-        )}
+        <HomeCategories
+          categories={popularCategories}
+          mode="other"
+          renderGame={game => (
+            <MiniGameCard
+              key={game.gameID || game.game}
+              game={game}
+              onClick={() => handleCarouselGameClick(game)}
+              onContextMenu={handleContextMenu}
+            />
+          )}
+        />
 
         {/* Footer - Support Section */}
         <footer className="mt-16 border-t border-border/30 pb-8 pt-10">

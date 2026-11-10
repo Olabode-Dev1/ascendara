@@ -1,3 +1,4 @@
+import SimilarGames from "@/components/SimilarGames";
 import GameReviews from "@/components/GameReviews";
 import PrivateGameDetails from "@/components/download/PrivateGameDetails";
 import AscendPerks from "@/components/download/AscendPerks";
@@ -284,8 +285,8 @@ function PublicDownloadPage() {
         setShowCopySuccess(false);
         setShowShareCopySuccess(false);
 
-        // Remove the state from history
-        window.history.replaceState({}, document.title, location.pathname);
+        // HashRouter owns history, including the Browse URL and return entry.
+        // Rewriting it during an exit animation erases the destination's state.
       }
     };
   }, [location]);
@@ -2198,6 +2199,7 @@ function PublicDownloadPage() {
               onReviewCount={setWrittenReviews}
               sectionRef={reviewsRef}
             />
+            <SimilarGames game={latestGameData || gameData} />
           </div>
         </div>
       </div>

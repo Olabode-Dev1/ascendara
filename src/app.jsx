@@ -166,6 +166,7 @@ function lazyPage(load) {
 }
 
 const pageLoaders = {
+  browse: () => import("./pages/Browse"),
   download: () => import("./pages/Download"),
   downloads: () => import("./pages/Downloads"),
   extraLanguages: () => import("./pages/ExtraLanguages"),
@@ -184,6 +185,7 @@ const pageLoaders = {
   bigPicture: () => import("./pages/BigPicture"),
 };
 
+const Browse = lazyPage(pageLoaders.browse);
 const DownloadPage = lazyPage(pageLoaders.download);
 const Downloads = lazyPage(pageLoaders.downloads);
 const ExtraLanguages = lazyPage(pageLoaders.extraLanguages);
@@ -2099,6 +2101,7 @@ const AppRoutes = () => {
           <Route path="/" element={<Layout />}>
             <Route index element={<Home />} />
             <Route path="search" element={null} />
+            <Route path="browse" element={<Browse />} />
             <Route path="library" element={<Library />} />
             <Route path="retro" element={<RetroRedirect />} />
             <Route path="folderview/:folderName" element={<FolderView />} />
@@ -2130,7 +2133,13 @@ const AppRoutes = () => {
             <Route
               path="download"
               element={
-                <DownloadPage key={location.state?.gameData?.game || "download"} />
+                <DownloadPage
+                  key={
+                    location.state?.gameData?.gameID ||
+                    location.state?.gameData?.game ||
+                    "download"
+                  }
+                />
               }
             />
             <Route path="extralanguages" element={<ExtraLanguages />} />
